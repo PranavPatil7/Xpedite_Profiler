@@ -1,6 +1,4 @@
-[![Apache License](https://img.shields.io/badge/license-Apache-yellow.svg)](https://raw.githubusercontent.com/Morgan-Stanley/Xpedite/master/LICENSE.md)
-[![Build Status](https://github.com/morganstanley/Xpedite/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/morganstanley/Xpedite/actions/workflows/main.yml)
-[![codecov](https://codecov.io/gh/morganstanley/Xpedite/branch/main/graph/badge.svg?token=25wU3VJLky)](https://codecov.io/gh/MorganStanley/Xpedite)
+
 
 # Xpedite
 
@@ -510,15 +508,7 @@ For production systems, it is a good practice to run xpedite in a host different
 Xpedite supports profiling applications running in any remote host, as long as a tcp connectivity is permitted.
 Remote profiling can be enabled, by setting the appropriate remote host name in ```appHost``` parameter of the profileInfo module.
 
-## Support <a name="support"></a>
-Need Help ? Get in touch with Xpedite developers via email - msperf@morganstanley.com
 
-## Acknowledgements <a name="acknowledgements"></a>
-
-Xpedite was envisioned and developed by **[Manikandan Dhamodharan](http://www.linkedin.com/in/mani-d)**.
-  
-
-Thanks to **[Brooke Elizabeth Cantwell](https://www.linkedin.com/in/brookecantwell)**, **[Dhruv Shekhawat](http://www.linkedin.com/in/dhruvshekhawat)** for jupyter integration and test cases.
   
 
 Special thanks to **Dileep Perchani** and **Kevin Elliott** for leading Xpedite open source initiative.
