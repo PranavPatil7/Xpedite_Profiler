@@ -1,0 +1,276 @@
+#!/usr/bin/env python
+"""
+Xpedite is a probe based profiler to measure and optimise,
+performance of ultra-low-latency / real time systems.
+
+The main features include
+
+  1. Quantify how efficiently "a software stack" or
+     "a section of code", is running in a target platform (CPU/OS).
+  2. Do Cycle accounting and bottleneck analysis using H/W performance
+     counters and top-down micro architecture analysis methodology
+  3. Filter, query and visualise performance statistics with
+     real time interactive shell (Jupiter).
+  4. Prevent regressions, by benchmarking latency statistics
+     for multiple runs/builds side-by-side.
+
+Author: Manikandan Dhamodharan, Morgan Stanley
+"""
+
+import os, sys
+xpeditePath = os.path.normpath(os.path.join(__file__, '../../lib'))
+sys.path.append(xpeditePath)
+
+import logger
+logger.init()
+
+from xpedite.dependencies               import Package, DEPENDENCY_LOADER
+DEPENDENCY_LOADER.load(Package.Cement)
+from cement import App, CaughtSignal, Controller, ex
+
+import logging
+import xpedite
+
+LOGGER = logging.getLogger('xpedite')
+
+installPath = os.path.dirname(os.path.abspath(__file__))
+profileInfoTemplate = os.path.dirname(installPath) + '/lib/examples/profileInfo.py'
+profileInfoHelp = 'path to the profile info (check "{}" for sample template)'.format(profileInfoTemplate)
+
+def _loadPerfEventsDb(cpuId=None):
+  from xpedite.pmu.eventsDb import loadEventsDb
+  from xpedite.util import getCpuId
+  cpuId = cpuId if cpuId else getCpuId()
+  return loadEventsDb(cpuId)
+
+def _loadDriver(name = None):
+  import signal
+  from xpedite.dependencies import loadDriver
+  from xpedite.util import attachPdb
+  signal.signal(signal.SIGUSR1, attachPdb)
+  driver = loadDriver(name)
+  if not driver:
+    from xpedite.jupyter.driver import Driver
+    return Driver()
+  return driver
+
+
+class AppController(Controller):
+  class Meta:
+    label = 'base'
+
+  @ex(hide=True)
+  def default(self):
+    self.probes()
+
+  @ex(
+    arguments=[
+      (['-p', '--profileInfo'], dict(action='store', required=True, help=profileInfoHelp)),
+      (['-b', '--createBenchmark'], dict(action='store', help='store Live profile report at the given path, for future benchmarking')),
+      (['-D', '--driver'], dict(action='store', help='driver for report generation')),
+      (['-d', '--duration'], dict(action='store', help='capture samples for duration (in seconds)')),
+      (['-v', '--verbose'], dict(action='store_true', help='verbose mode, with tsc values in perf report')),
+      (['-S', '--selfProfile'], dict(action='store', required=False, help='self profile xpedite - path to store the profile data')),
+      (['-n', '--name'], dict(action='store', required=False, help='Name for the generated xpedite report. By default App Name with time stamp is used')),
+      (['-l', '--lean'], dict(action='store_true', help='create a lean report. This option will bypass attaching xpedite notebook to custom drivers')),
+      (['-H', '--heartbeat'], dict(action='store', type=int, help='configures heartbeat interval (in seconds) for profiler')),
+      (['-s', '--samplesFileSize'], dict(action='store', type=int, help='max size of data files used to store samples')),
+    ],
+    help='Attach to a live process and begin profiling'
+  )
+  def record(self):
+    from xpedite.selfProfile import CProfile
+    cprofile = CProfile(self.app.pargs.selfProfile) if self.app.pargs.selfProfile else None
+    from xpedite.profiler import Profiler
+    profileInfo, report = Profiler.record(
+      self.app.pargs.profileInfo,
+      benchmarkPath=self.app.pargs.createBenchmark,
+      duration=self.app.pargs.duration,
+      heartbeatInterval=self.app.pargs.heartbeat,
+      samplesFileSize=self.app.pargs.samplesFileSize,
+      cprofile=cprofile,
+      profileName=self.app.pargs.name,
+      verbose=self.app.pargs.verbose
+    )
+    driver = _loadDriver(self.app.pargs.driver)
+    driver.render(profileInfo, report, leanReports = self.app.pargs.lean, cprofile = cprofile)
+
+  @ex(
+    arguments=[
+      (['-p', '--profileInfo'], dict(action='store', required=True, help=profileInfoHelp)),
+    ],
+    help='List all xpedite probes instrumeted in process, with their current status'
+  )
+  def probes(self):
+    from xpedite.profiler import Profiler
+    profileInfoPath = self.app.pargs.profileInfo
+    probes, profileInfo = Profiler.probes(profileInfoPath)
+    if(len(probes)):
+      LOGGER.info('%-80s \t %s', 'probe name', 'status')
+      for probe in probes:
+        name = probe.getCanonicalName()
+        LOGGER.info('%-80s \t %s', name, 'enabled' if probe.isActive else 'disabled')
+    else:
+      LOGGER.error('failed to locate probes in app %s. Have you instrumented any ?', profileInfo.appName)
+    LOGGER.info('')
+
+  @ex(
+    arguments=[
+      (['-H', '--hostname'], dict(action='store', default='127.0.0.1', help='host where the app runs')),
+      (['-a', '--appInfo'], dict(action='store', required=True, help='path to appInfo file, used in xpedite framework initilization')),
+    ],
+    help='Generate profile info for xpedite instrumented application'
+  )
+  def generate(self):
+    from xpedite.profiler import Profiler
+    Profiler.generate(self.app.pargs.appInfo, hostname=self.app.pargs.hostname)
+
+  @ex(
+    arguments=[
+      (['-H', '--home'], dict(action='store', required=False, help='Home dir for xpedite shell')),
+      (['-z', '--zip'], dict(action='store', required=False, help='Archive a xpedite report. Takes path of a xpedite notebook as argument')),
+      (['-u', '--unzip'], dict(action='store', required=False, help='UnPack a xpedite archive (*.tar.xp) and launch a shell')),
+    ],
+    help='Launch a xpedite shell'
+  )
+  def shell(self):
+    from xpedite.jupyter.driver import launchJupyter
+    from xpedite.jupyter.archive import Inflator, Deflator
+    if self.app.pargs.zip:
+      with Inflator(self.app.pargs.zip) as inflator:
+        inflator.inflate()
+        return
+    home = self.app.pargs.home
+    if not home:
+      LOGGER.warning('No home directory specified for shell - using current working directory')
+      home = os.getcwd()
+
+    if self.app.pargs.unzip:
+      with Deflator(self.app.pargs.unzip) as deflator:
+        deflator.deflate(home)
+    launchJupyter(home)
+
+class FrameworkController(Controller):
+  class Meta:
+    label = 'FrameworkController'
+    stacked_on = 'base'
+    stacked_type = 'embedded'
+
+  @ex(
+    arguments=[
+      (['-p', '--profileInfo'], dict(action='store', required=True, help=profileInfoHelp)),
+      (['-b', '--createBenchmark'], dict(action='store', help='store report at the given path, for future benchmarking')),
+      (['-d', '--driver'], dict(action='store', help='driver for report generation')),
+      (['-r', '--runId'], dict(action='store', required=False, help='run-id to generate the report for')),
+      (['-l', '--loadBenchmark'], dict(action='store', required=False, help='load data at the given path')),
+      (['-v', '--verbose'], dict(action='store_true', help='verbose mode, with tsc values in perf report')),
+      (['-s', '--selfProfile'], dict(action='store', required=False, help='self profile xpedite - path to store the profile data')),
+      (['-n', '--name'], dict(action='store', required=False, help='Name for the generated xpedite report. By default App Name with time stamp is used')),
+      (['-L', '--lean'], dict(action='store_true', help='make reports lean by skipping details, that use lots of storage space')),
+    ],
+    help='Generate report for a previous run'
+  )
+  def report(self):
+    if not self.app.pargs.runId and not self.app.pargs.loadBenchmark:
+      LOGGER.error('Insufficient arguments - requires either a valid runId (-r | --runId) or a benchmark path (-l | --loadBenchmark)\n')
+      return
+    if self.app.pargs.runId and self.app.pargs.loadBenchmark:
+      LOGGER.error('Conflicting arguments - pick either a runId (-r | --runId) or benchmark path (-l | --loadBenchmark)\n')
+      return
+    from xpedite.selfProfile import CProfile
+    cprofile = CProfile(self.app.pargs.selfProfile) if self.app.pargs.selfProfile else None
+    from xpedite.profiler import Profiler
+    profileInfo, report = Profiler.report(
+      self.app.pargs.profileInfo,
+      runId=self.app.pargs.runId,
+      dataSourcePath=self.app.pargs.loadBenchmark,
+      benchmarkPath=self.app.pargs.createBenchmark,
+      cprofile=cprofile,
+      profileName=self.app.pargs.name,
+      verbose=self.app.pargs.verbose
+    )
+    driver = _loadDriver(self.app.pargs.driver)
+    driver.render(profileInfo, report, leanReports = self.app.pargs.lean, cprofile = cprofile)
+
+  @ex(
+    arguments=[
+    ],
+    help='Print the CPU info for the current machine'
+  )
+  def cpuInfo(self):
+    from xpedite.util import getCpuId
+    cpuId = getCpuId()
+    LOGGER.info('%s\n', cpuId)
+
+  @ex(
+    arguments=[
+      (['-c', '--cpuId'], dict(action='store', required=False, help='list pmu counters for the give cpu identifier')),
+    ],
+    help='List the NON Archtectural hardware performance counters, that can be profiled with xpedite'
+  )
+  def list(self):
+    eventsDb = _loadPerfEventsDb(self.app.pargs.cpuId)
+    for n, e in eventsDb.eventsMap.items():
+      LOGGER.info(e)
+    LOGGER.info('')
+
+  @ex(
+    arguments=[
+      (['-n', '--node'], dict(action='store', help='list pmu events for node - enter "all" to list events for all nodes')),
+      (['-c', '--cpuId'], dict(action='store', required=False, help='list pmu counters for the give cpu identifier')),
+    ],
+    help='List the metrics, for bottleneck analysis with xpedite'
+  )
+  def metrics(self):
+    from xpedite.pmu.topdown import Topdown
+    topdown = Topdown(_loadPerfEventsDb(self.app.pargs.cpuId))
+    for n, m in topdown.metrics().items():
+      LOGGER.info('%s', topdown.metricsToString(n))
+    LOGGER.info('')
+
+  @ex(
+    arguments=[
+      (['-n', '--node'], dict(action='store', help='list pmu events for node - enter "all" to list events for all nodes')),
+      (['-c', '--cpuId'], dict(action='store', required=False, help='list pmu counters for the give cpu identifier')),
+    ],
+    help='List the top down hierarchy data, for bottleneck analysis with xpedite'
+  )
+  def topdown(self):
+    from xpedite.pmu.topdown import Topdown
+    topdown = Topdown(_loadPerfEventsDb(self.app.pargs.cpuId))
+    if self.app.pargs.node:
+      value = topdown.nodesToString(self.app.pargs.node)
+      LOGGER.info('%s\n', value if value else 
+          '"{}" is not a valid topdown node (Hint: node names are Case Sensitive)'.format(self.app.pargs.node))
+      return
+    LOGGER.info('%s\n', topdown.hierarchy)
+
+  @ex(
+    arguments=[
+      (['-e', '--enable'], dict(action='store_true', help='load xpedite kernel module to ENABLE hardware performance counters')),
+      (['-d', '--disable'], dict(action='store_true', help='unload xpedite kernel module to DISABLE hardware performance counters')),
+      (['-v', '--verbose'], dict(action='store_true', help='verbose mode, to troubleshoot kernel module load script')),
+    ],
+    help='Load/Unload xpedite kernel module to enable/disable hardware performance counters'
+  )
+  def pmc(self):
+    koLoader = os.path.join(installPath, 'ko.sh')
+    import subprocess
+    from xpedite.pmu.pmuctrl import isDriverLoaded
+    if self.app.pargs.enable or self.app.pargs.disable:
+      action = '-l' if self.app.pargs.enable else '-u'
+      cmdList = [koLoader, action]
+      if self.app.pargs.verbose:
+        cmdList.append('-v')
+      extractor = subprocess.call(cmdList)
+    LOGGER.info('pmc status - %s\n', 'enabled' if isDriverLoaded() else 'disabled')
+
+class XpediteClient(App):
+  class Meta:
+    label = 'Xpedite'
+    base_controller = 'base'
+    handlers = [AppController, FrameworkController]
+
+if __name__ == '__main__':
+  with XpediteClient() as app:
+      app.run()

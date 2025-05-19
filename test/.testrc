@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#########################################################
+#
+# Applications and scenarios used in testing Xpedite
+#
+#########################################################
+
+declare -a APPS=("allocatorApp" "dataTxnApp" "multiThreadedApp" "slowFixDecoderApp")
+declare -a SCENARIOS=("Regular" "Benchmark" "PMC")
+PMU_DATA=pmuData
+
+function fullPath() {
+  echo "$(cd "$(dirname "$1")"; pwd -P)/$(basename "$1")"
+}

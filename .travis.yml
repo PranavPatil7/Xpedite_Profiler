@@ -1,0 +1,34 @@
+language: cpp
+sudo: required
+dist: xenial
+compiler:
+- gcc
+
+branches:
+  only:
+  - main
+
+before_install:
+ - sudo apt-get update
+ - sudo apt-get -y install libgtest-dev libunwind-dev libdwarf-dev binutils-dev cmake
+
+before_script:
+ - sudo wget https://github.com/google/googletest/archive/release-1.7.0.tar.gz
+ - sudo tar xf release-1.7.0.tar.gz
+ - pushd googletest-release-1.7.0
+ - sudo cmake -DBUILD_SHARED_LIBS=ON .
+ - sudo make
+ - sudo cp -a include/gtest /usr/include
+ - sudo cp -a libgtest_main.so libgtest.so /usr/lib/
+ - sudo sh -c 'echo -1 >/proc/sys/kernel/perf_event_paranoid'
+ - popd
+
+script:
+  - ./build.sh --withCallStacks --forJava
+  - ./install.sh
+  - ./test/validateTarFiles.sh
+  - ./test/runTest.sh -c
+
+after_success:
+  - PATH=./install/runtime/bin:${PATH} python -m pip install codecov
+  - PATH=./install/runtime/bin:${PATH} codecov
